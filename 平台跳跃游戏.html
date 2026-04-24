@@ -1,0 +1,894 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>像素平台跳跃</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            background: linear-gradient(to bottom, #0a192f 0%, #1a1a2e 50%, #16213e 100%); 
+            display: grid; place-content: center; padding: 20px;
+            min-height: 100vh;
+            overflow: hidden;
+        }
+        canvas { 
+            border: 4px solid #222; 
+            background: linear-gradient(to bottom, #5d9cec 0%, #87b5ff 30%, #6aa6ff 70%, #5d9cec 100%);
+            image-rendering: pixelated; 
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+        }
+    </style>
+</head>
+<body>
+<canvas id="game" width="1280" height="600"></canvas>
+
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const keys = {};
+
+const landLockFrames = 6;
+const jumpBuffer = 8;
+const coyoteTime = 6;
+let jumpBufferTimer = 0;
+let coyoteTimer = 0;
+
+let camera = {
+    x: 0, width: canvas.width, height: canvas.height
+};
+
+let player = {
+    x: 50,
+    y: 544,
+    w: 24,
+    h: 44,
+    vx: 0,
+    vy: 0,
+    speed: 1.8,
+    jumpPower: -10,
+    gravity: 0.32,
+    onGround: false,
+    groundTimer: 0,
+    landLockTimer: 0,
+    animTick: 0,
+    faceRight: true
+};
+
+let platforms = [
+    { x: 0, y: 580, w: 250, h: 20 },
+    { x: 300, y: 520, w: 180, h: 20 },
+    { x: 520, y: 460, w: 160, h: 20 },
+    { x: 720, y: 400, w: 140, h: 20 },
+    { x: 900, y: 480, w: 200, h: 20 },
+    { x: 1150, y: 420, w: 150, h: 20 },
+    { x: 1350, y: 350, w: 200, h: 20 },
+    { x: 400, y: 350, w: 120, h: 20 },
+    { x: 650, y: 290, w: 100, h: 20 },
+    { x: 950, y: 250, w: 180, h: 20 },
+    { x: 1200, y: 320, w: 150, h: 20 },
+    { x: 1500, y: 500, w: 180, h: 20 },
+    { x: 1720, y: 440, w: 160, h: 20 },
+    { x: 1920, y: 380, w: 140, h: 20 },
+    { x: 2100, y: 460, w: 200, h: 20 },
+    { x: 2350, y: 400, w: 150, h: 20 },
+    { x: 2550, y: 330, w: 200, h: 20 },
+    { x: 2800, y: 280, w: 200, h: 20 }
+];
+
+let spikes = [
+    { x: 390, y: 500, w: 24, h: 20 },
+    { x: 590, y: 440, w: 24, h: 20 },
+    { x: 1590, y: 480, w: 24, h: 20 },
+    { x: 1980, y: 360, w: 24, h: 20 },
+    { x: 1050, y: 230, w: 24, h: 20 },
+    { x: 2420, y: 380, w: 24, h: 20 }
+];
+
+let coins = [
+    { x: 330, y: 500, collected: false },
+    { x: 540, y: 440, collected: false },
+    { x: 780, y: 380, collected: false },
+    { x: 990, y: 460, collected: false },
+    { x: 420, y: 330, collected: false },
+    { x: 670, y: 270, collected: false },
+    { x: 1100, y: 230, collected: false },
+    { x: 1220, y: 300, collected: false },
+    { x: 1520, y: 480, collected: false },
+    { x: 1820, y: 420, collected: false },
+    { x: 1940, y: 360, collected: false },
+    { x: 2250, y: 440, collected: false },
+    { x: 2650, y: 310, collected: false },
+    { x: 2750, y: 260, collected: false }
+];
+
+let springs = [
+    { x: 460, y: 330, w: 50, h:20, power:-16 },
+    { x: 1100, y:230, w:50, h:20, power:-18 },
+    { x: 2450, y:380, w:50, h:20, power:-17 }
+];
+
+let movePlatforms = [
+    { x:750,y:350,w:80,h:20,startX:750,endX:900,speed:1.2,dir:1 },
+    { x:1600,y:420,w:90,h:20,startX:1600,endX:1750,speed:1.5,dir:1 }
+];
+
+let hideCoins = [
+    {x:850,y:360,collected:false},
+    {x:1350,y:280,collected:false},
+    {x:2150,y:400,collected:false}
+];
+
+let flag = {
+    x: 2860, y: 240, poleHeight: 50, wave: 0
+};
+
+let score = 0;
+let coinAnim = 0;
+const spikeHitboxPad = 4;
+const coinRadius = 8;
+
+// 远景元素 - 分层视差
+let parallaxLayers = [
+    { // 最远的山 - 移动最慢
+        elements: [],
+        parallax: 0.05,
+        color: '#1a2a3a'
+    },
+    { // 中等距离的山 - 移动中等
+        elements: [],
+        parallax: 0.1,
+        color: '#2a3a4a'
+    },
+    { // 近景树丛
+        elements: [],
+        parallax: 0.2,
+        color: '#3a4a5a'
+    }
+];
+
+// 生成远景元素
+function generateParallaxElements() {
+    // 最远的山
+    for(let i = -200; i < 4000; i += 400) {
+        parallaxLayers[0].elements.push({
+            x: i,
+            y: 450 + Math.sin(i * 0.01) * 40,
+            width: 300 + Math.random() * 200,
+            height: 150 + Math.random() * 100,
+            color: '#1a2a3a'
+        });
+    }
+    
+    // 中等距离的山
+    for(let i = -150; i < 4000; i += 300) {
+        parallaxLayers[1].elements.push({
+            x: i,
+            y: 480 + Math.sin(i * 0.02) * 50,
+            width: 200 + Math.random() * 150,
+            height: 120 + Math.random() * 80,
+            color: '#2a3a4a'
+        });
+    }
+    
+    // 近景树丛
+    for(let i = -100; i < 4000; i += 150) {
+        parallaxLayers[2].elements.push({
+            x: i,
+            y: 520 + Math.sin(i * 0.03) * 30,
+            width: 100 + Math.random() * 80,
+            height: 80 + Math.random() * 40,
+            color: '#3a4a5a'
+        });
+    }
+}
+
+// 云朵 - 不同速度的视差
+let clouds = [
+    { x: 200, y: 120, size: 30, speed: 0.1, color: '#ffffff' },
+    { x: 500, y: 180, size: 25, speed: 0.08, color: '#f8f8f8' },
+    { x: 800, y: 100, size: 35, speed: 0.12, color: '#ffffff' },
+    { x: 1100, y: 160, size: 28, speed: 0.09, color: '#f8f8f8' },
+    { x: 1400, y: 110, size: 32, speed: 0.11, color: '#ffffff' },
+    { x: 1700, y: 190, size: 26, speed: 0.07, color: '#f8f8f8' },
+    { x: 2000, y: 130, size: 30, speed: 0.1, color: '#ffffff' },
+    { x: 2300, y: 150, size: 27, speed: 0.09, color: '#f8f8f8' },
+    { x: 2600, y: 120, size: 33, speed: 0.13, color: '#ffffff' },
+    { x: 2900, y: 170, size: 29, speed: 0.08, color: '#f8f8f8' }
+];
+
+// 添加更多的远景装饰
+let distantTrees = [];
+let foregroundBushes = [];
+
+// 生成装饰元素
+function generateDecorations() {
+    // 远处的树
+    for(let i = 0; i < 20; i++) {
+        distantTrees.push({
+            x: 300 + i * 200 + Math.random() * 100,
+            y: 400 + Math.sin(i) * 30,
+            height: 60 + Math.random() * 40,
+            width: 20 + Math.random() * 15,
+            color: '#2d4a2d',
+            parallax: 0.15 + Math.random() * 0.1
+        });
+    }
+    
+    // 前景灌木
+    for(let i = 0; i < 30; i++) {
+        foregroundBushes.push({
+            x: 200 + i * 150 + Math.random() * 80,
+            y: 550 + Math.sin(i * 0.5) * 20,
+            size: 15 + Math.random() * 10,
+            color: '#3a6b3a',
+            parallax: 0.3 + Math.random() * 0.2
+        });
+    }
+}
+
+document.addEventListener('keydown', e => { keys[e.key] = true; });
+document.addEventListener('keyup', e => { keys[e.key] = false; });
+
+function gameLoop() {
+    update();
+    render();
+    requestAnimationFrame(gameLoop);
+}
+
+function update() {
+    player.animTick += 0.15;
+    if (player.landLockTimer > 0) player.landLockTimer--;
+
+    player.vx = 0;
+    if (keys['ArrowLeft']) {
+        player.vx = -player.speed;
+        player.faceRight = false;
+    }
+    if (keys['ArrowRight']) {
+        player.vx = player.speed;
+        player.faceRight = true;
+    }
+
+    player.vy += player.gravity;
+    coinAnim += 0.15;
+    flag.wave += 0.05;
+
+    if (keys['ArrowUp']) {
+        jumpBufferTimer = jumpBuffer;
+    } else if (jumpBufferTimer > 0) {
+        jumpBufferTimer--;
+    }
+
+    // ✅ 修复：移动平台正确折返
+    movePlatforms.forEach(mp => {
+        mp.x += mp.speed * mp.dir;
+        // 右边界 → 向左走
+        if (mp.x > mp.endX) mp.dir = -1;
+        // 左边界 → 向右走
+        if (mp.x < mp.startX) mp.dir = 1;
+
+        // 站在平台上跟随
+        if (
+            player.x + player.w > mp.x &&
+            player.x < mp.x + mp.w &&
+            Math.abs((player.y + player.h) - mp.y) < 8 &&
+            player.vy >= 0
+        ) {
+            player.x += mp.speed * mp.dir;
+            player.y = mp.y - player.h;
+            player.vy = 0;
+            player.onGround = true;
+            coyoteTimer = coyoteTime;
+        }
+    });
+
+    player.x += player.vx;
+    player.y += player.vy;
+
+    if (player.x < 0) player.x = 0;
+    if (player.x + player.w > 3000) player.x = 3000 - player.w;
+    if (player.y > canvas.height + 100) resetPlayer();
+
+    let wasOnGround = player.onGround;
+    player.onGround = false;
+
+    platforms.forEach(plat => {
+        if (
+            player.x + player.w > plat.x &&
+            player.x < plat.x + plat.w &&
+            player.y + player.h > plat.y &&
+            player.y < plat.y + plat.h &&
+            player.vy > 0
+        ) {
+            player.y = plat.y - player.h;
+            player.vy = 0;
+            player.onGround = true;
+            if (!wasOnGround) {
+                player.landLockTimer = landLockFrames;
+            }
+        }
+    });
+
+    if (player.onGround) {
+        coyoteTimer = coyoteTime;
+    } else if (coyoteTimer > 0) {
+        coyoteTimer--;
+    }
+
+    if (jumpBufferTimer > 0 && coyoteTimer > 0 && player.landLockTimer <= 0) {
+        player.vy = player.jumpPower;
+        player.onGround = false;
+        jumpBufferTimer = 0;
+        coyoteTimer = 0;
+    }
+
+    springs.forEach(sp => {
+        if (
+            player.x + player.w > sp.x &&
+            player.x < sp.x + sp.w &&
+            player.y + player.h > sp.y &&
+            player.y + player.h < sp.y + sp.h + 10 &&
+            player.vy >= 0
+        ) {
+            player.vy = sp.power;
+            player.onGround = false;
+        }
+    });
+
+    spikes.forEach(spike => {
+        const pad = spikeHitboxPad;
+        if (
+            player.x < spike.x + spike.w - pad &&
+            player.x + player.w > spike.x + pad &&
+            player.y < spike.y + spike.h - pad &&
+            player.y + player.h > spike.y + pad
+        ) {
+            resetPlayer();
+        }
+    });
+
+    coins.forEach(coin => {
+        if (!coin.collected) {
+            if (
+                player.x < coin.x + coinRadius &&
+                player.x + player.w > coin.x - coinRadius &&
+                player.y < coin.y + coinRadius &&
+                player.y + player.h > coin.y - coinRadius
+            ) {
+                coin.collected = true;
+                score++;
+            }
+        }
+    });
+
+    hideCoins.forEach(hc => {
+        if (!hc.collected) {
+            let dx = player.x + player.w / 2 - hc.x;
+            let dy = player.y + player.h / 2 - hc.y;
+            let dist = Math.hypot(dx, dy);
+            if (dist < 30) {
+                hc.collected = true;
+                score++;
+            }
+        }
+    });
+
+    const flagHitW = 30;
+    const flagHitH = 50;
+    if (
+        player.x < flag.x + flagHitW &&
+        player.x + player.w > flag.x - flagHitW &&
+        player.y < flag.y + flagHitH &&
+        player.y + player.h > flag.y
+    ) {
+        alert(`🏁 到达终点！\n金币：${score}/${coins.length + hideCoins.length}`);
+        resetPlayer();
+    }
+
+    const targetCamX = player.x - camera.width / 2 + player.w / 2;
+    camera.x += (targetCamX - camera.x) * 0.1;
+    if (camera.x < 0) camera.x = 0;
+}
+
+function resetPlayer() {
+    player.x = 50;
+    player.y = 544;
+    player.vx = 0;
+    player.vy = 0;
+    player.onGround = false;
+    player.landLockTimer = 0;
+    camera.x = 0;
+    score = 0;
+    coins.forEach(c => c.collected = false);
+    hideCoins.forEach(c => c.collected = false);
+}
+
+// 绘制平台纹理
+function drawPlatformTexture(x, y, w, h, type = 'normal') {
+    // 基础颜色
+    let baseColor, topColor, bottomColor, detailColor;
+    
+    if (type === 'normal') {
+        baseColor = '#3a5f3a';
+        topColor = '#5a8f5a';
+        bottomColor = '#2a4f2a';
+        detailColor = '#4a7f4a';
+    } else if (type === 'moving') {
+        baseColor = '#7744aa';
+        topColor = '#9966cc';
+        bottomColor = '#553388';
+        detailColor = '#8855bb';
+    }
+    
+    // 平台主体
+    ctx.fillStyle = baseColor;
+    ctx.fillRect(x, y, w, h);
+    
+    // 顶部边缘（亮色）
+    ctx.fillStyle = topColor;
+    ctx.fillRect(x, y, w, 2);
+    
+    // 底部阴影（暗色）
+    ctx.fillStyle = bottomColor;
+    ctx.fillRect(x, y + h - 2, w, 2);
+    
+    // 侧边渐变
+    const gradient = ctx.createLinearGradient(x, y, x + w, y);
+    gradient.addColorStop(0, topColor);
+    gradient.addColorStop(0.5, baseColor);
+    gradient.addColorStop(1, topColor);
+    ctx.fillStyle = gradient;
+    ctx.fillRect(x, y + 2, w, h - 4);
+    
+    // 添加纹理细节（像素点）
+    ctx.fillStyle = detailColor;
+    const pixelSize = 4;
+    for (let px = x + 4; px < x + w - 4; px += pixelSize * 2) {
+        for (let py = y + 4; py < y + h - 4; py += pixelSize * 2) {
+            if (Math.random() > 0.7) {
+                ctx.fillRect(px, py, pixelSize, pixelSize);
+            }
+        }
+    }
+    
+    // 添加边缘细节
+    ctx.fillStyle = bottomColor;
+    for (let i = 0; i < w; i += 8) {
+        ctx.fillRect(x + i, y + h - 4, 4, 2);
+    }
+}
+
+// 绘制弹簧平台纹理
+function drawSpringTexture(x, y, w, h) {
+    // 基础颜色
+    const baseColor = '#ff7700';
+    const topColor = '#ffaa22';
+    const bottomColor = '#cc5500';
+    const springColor = '#ffff00';
+    
+    // 平台主体
+    ctx.fillStyle = baseColor;
+    ctx.fillRect(x, y, w, h);
+    
+    // 顶部边缘
+    ctx.fillStyle = topColor;
+    ctx.fillRect(x, y, w, 3);
+    
+    // 底部阴影
+    ctx.fillStyle = bottomColor;
+    ctx.fillRect(x, y + h - 2, w, 2);
+    
+    // 弹簧细节
+    ctx.fillStyle = springColor;
+    for (let i = 0; i < w; i += 8) {
+        // 弹簧线圈
+        ctx.fillRect(x + i, y + 5, 4, 2);
+        ctx.fillRect(x + i + 2, y + 8, 4, 2);
+        ctx.fillRect(x + i, y + 11, 4, 2);
+    }
+    
+    // 侧边渐变
+    const gradient = ctx.createLinearGradient(x, y, x + w, y);
+    gradient.addColorStop(0, topColor);
+    gradient.addColorStop(0.5, baseColor);
+    gradient.addColorStop(1, topColor);
+    ctx.fillStyle = gradient;
+    ctx.fillRect(x, y + 3, w, h - 5);
+}
+
+function drawPixelPlayer(x, y) {
+    const s = 2;
+    const legPhase = Math.sin(player.animTick * 4) * 1;
+    ctx.fillStyle = '#2255cc';
+    ctx.fillRect(x + 4*s, y + 0*s, 8*s, 8*s);
+    ctx.fillRect(x + 4*s, y + 8*s, 8*s, 12*s);
+
+    if (player.onGround) {
+        ctx.fillRect(x + 2*s, y + 20*s + legPhase, 4*s, 4*s);
+        ctx.fillRect(x + 10*s, y + 20*s - legPhase, 4*s, 4*s);
+    } else {
+        ctx.fillRect(x + 2*s, y + 20*s, 4*s, 4*s);
+        ctx.fillRect(x + 10*s, y + 20*s, 4*s, 4*s);
+    }
+
+    ctx.fillStyle = '#224499';
+    if (!player.onGround) {
+        ctx.fillRect(x + 0*s, y + 4*s, 2*s, 8*s);
+        ctx.fillRect(x + 14*s, y + 4*s, 2*s, 8*s);
+    } else {
+        ctx.fillRect(x + 0*s, y + 8*s, 2*s, 10*s);
+        ctx.fillRect(x + 14*s, y + 8*s, 2*s, 10*s);
+    }
+
+    ctx.fillStyle = '#fff';
+    if (player.faceRight) {
+        ctx.fillRect(x + 8*s, y + 2*s, 2*s, 2*s);
+        ctx.fillRect(x + 10*s, y + 2*s, 2*s, 2*s);
+    } else {
+        ctx.fillRect(x + 4*s, y + 2*s, 2*s, 2*s);
+        ctx.fillRect(x + 6*s, y + 2*s, 2*s, 2*s);
+    }
+}
+
+function drawCloud(x, y, size, color) {
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(x, y, size, 0, Math.PI * 2);
+    ctx.arc(x + size*0.7, y, size*0.8, 0, Math.PI * 2);
+    ctx.arc(x - size*0.7, y, size*0.8, 0, Math.PI * 2);
+    ctx.arc(x + size*0.5, y - size*0.5, size*0.7, 0, Math.PI * 2);
+    ctx.arc(x - size*0.5, y - size*0.5, size*0.7, 0, Math.PI * 2);
+    ctx.fill();
+}
+
+// 绘制远景山体（视差层）
+function drawParallaxMountains() {
+    parallaxLayers.forEach((layer, index) => {
+        ctx.save();
+        const parallaxOffset = camera.x * layer.parallax;
+        ctx.translate(-parallaxOffset, 0);
+        
+        layer.elements.forEach(mountain => {
+            // 山体渐变
+            const gradient = ctx.createLinearGradient(
+                mountain.x, 
+                mountain.y, 
+                mountain.x, 
+                mountain.y + mountain.height
+            );
+            gradient.addColorStop(0, layer.color);
+            gradient.addColorStop(1, '#0a192f');
+            
+            ctx.fillStyle = gradient;
+            
+            // 绘制山体
+            ctx.beginPath();
+            ctx.moveTo(mountain.x, mountain.y + mountain.height);
+            ctx.lineTo(mountain.x + mountain.width/2, mountain.y);
+            ctx.lineTo(mountain.x + mountain.width, mountain.y + mountain.height);
+            ctx.closePath();
+            ctx.fill();
+            
+
+           // 山顶积雪（只对较高的山）
+            if (mountain.height > 180) {
+                ctx.fillStyle = '#e8f4f8';
+                ctx.beginPath();
+                ctx.moveTo(mountain.x + mountain.width/4, mountain.y + 10);
+                ctx.lineTo(mountain.x + mountain.width/2, mountain.y);
+                ctx.lineTo(mountain.x + mountain.width*3/4, mountain.y + 10);
+                ctx.closePath();
+                ctx.fill();
+            }
+        });
+        
+        ctx.restore();
+    });
+}
+
+// 绘制远处树木
+function drawDistantTrees() {
+    distantTrees.forEach(tree => {
+        ctx.save();
+        const parallaxOffset = camera.x * tree.parallax;
+        ctx.translate(-parallaxOffset, 0);
+        
+        // 树干
+        ctx.fillStyle = '#3d2b1f';
+        ctx.fillRect(tree.x, tree.y, tree.width, 600 - tree.y);
+        
+        // 树冠
+        const gradient = ctx.createLinearGradient(
+            tree.x - tree.width, 
+            tree.y, 
+            tree.x + tree.width * 2, 
+            tree.y + tree.height
+        );
+        gradient.addColorStop(0, '#2d4a2d');
+        gradient.addColorStop(1, '#1e3a1e');
+        
+        ctx.fillStyle = gradient;
+        ctx.beginPath();
+        ctx.ellipse(
+            tree.x + tree.width/2, 
+            tree.y - tree.height/3, 
+            tree.width * 1.5, 
+            tree.height, 
+            0, 0, Math.PI * 2
+        );
+        ctx.fill();
+        
+        ctx.restore();
+    });
+}
+  // 绘制前景灌木
+function drawForegroundBushes() {
+    foregroundBushes.forEach(bush => {
+        ctx.save();
+        const parallaxOffset = camera.x * bush.parallax;
+        ctx.translate(-parallaxOffset, 0);
+        
+        // 灌木丛
+        ctx.fillStyle = bush.color;
+        for(let i = 0; i < 3; i++) {
+            ctx.beginPath();
+            ctx.arc(
+                bush.x + i * bush.size/2, 
+                bush.y, 
+                bush.size * (1 - i * 0.2), 
+                0, Math.PI * 2
+            );
+            ctx.fill();
+        }
+        
+        ctx.restore();
+    });
+}
+
+function drawCoin(x, y) {
+    const bounce = Math.sin(coinAnim) * 4;
+    // 金币发光效果
+    const gradient = ctx.createRadialGradient(x, y + bounce, 0, x, y + bounce, 12);
+    gradient.addColorStop(0, '#ffff88');
+    gradient.addColorStop(0.7, '#ffdd00');
+    gradient.addColorStop(1, '#ffaa00');
+    
+    ctx.fillStyle = gradient;
+    ctx.beginPath();
+    ctx.arc(x, y + bounce, 10, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // 金币高光
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(x - 3, y + bounce - 3, 3, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // 金币细节
+    ctx.fillStyle = '#ffaa00';
+    ctx.beginPath();
+    ctx.arc(x, y + bounce, 6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#cc8800';
+    ctx.beginPath();
+    ctx.arc(x, y + bounce, 4, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // 旋转动画
+    ctx.save();
+    ctx.translate(x, y + bounce);
+    ctx.rotate(coinAnim * 0.5);
+    ctx.fillStyle = '#ffdd00';
+    ctx.fillRect(-5, -1, 10, 2);
+    ctx.restore();
+}
+
+function drawFlag(x, y, h, wave) {
+    // 旗杆
+    ctx.fillStyle = '#666';
+    ctx.fillRect(x, y, 4, h);
+    
+    // 旗杆顶部装饰
+    ctx.fillStyle = '#ffcc00';
+    ctx.beginPath();
+    ctx.arc(x + 2, y, 5, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // 旗帜
+    ctx.fillStyle = '#e74c3c';
+    ctx.beginPath();
+    ctx.moveTo(x + 4, y);
+    const wave1 = Math.sin(wave) * 3;
+    const wave2 = Math.sin(wave + 1) * 3;
+    const wave3 = Math.sin(wave + 2) * 3;
+    ctx.bezierCurveTo(
+        x + 15, y + 8 + wave1,
+        x + 25, y + 15 + wave2,
+        x + 15, y + 25 + wave3
+    );
+    ctx.lineTo(x + 4, y + 15);
+    ctx.closePath();
+    ctx.fill();
+    
+    // 旗帜边框
+    ctx.strokeStyle = '#c0392b';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    
+    // 旗帜图案
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(x + 12, y + 10, 3, 0, Math.PI * 2);
+    ctx.fill();
+}
+
+function drawUI() {
+    // UI背景
+    ctx.fillStyle = 'rgba(34, 34, 34, 0.8)';
+    ctx.fillRect(10, 10, 220, 32);
+    
+    // UI边框
+    ctx.strokeStyle = '#5a8f5a';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(10, 10, 220, 32);
+    
+        // 金币图标
+    ctx.fillStyle = '#ffdd00';
+    ctx.beginPath();
+    ctx.arc(25, 26, 8, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#ffaa00';
+    ctx.beginPath();
+    ctx.arc(25, 26, 5, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // 文字
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 16px monospace';
+    let total = coins.length + hideCoins.length;
+    ctx.fillText(`金币: ${score}/${total}`, 40, 32);
+    
+    // 进度条背景
+    ctx.fillStyle = '#3a5f3a';
+    ctx.fillRect(10, 45, 220, 6);
+    
+    // 进度条
+    const progress = camera.x / (flag.x - camera.width);
+    ctx.fillStyle = '#5a8f5a';
+    ctx.fillRect(10, 45, 220 * Math.min(progress, 1), 6);
+}
+
+function drawSpike(x, y, w, h) {
+    // 尖刺阴影
+    ctx.fillStyle = '#a02020';
+    ctx.beginPath();
+    ctx.moveTo(x + w/2, y + 2);
+    ctx.lineTo(x - 2, y + h);
+    ctx.lineTo(x + w + 2, y + h);
+    ctx.closePath();
+    ctx.fill();
+    
+    // 尖刺主体
+    ctx.fillStyle = '#e03030';
+    ctx.beginPath();
+    ctx.moveTo(x + w/2, y);
+    ctx.lineTo(x, y + h);
+    ctx.lineTo(x + w, y + h);
+    ctx.closePath();
+    ctx.fill();
+    
+    // 高光
+    ctx.fillStyle = '#ff5050';
+    ctx.beginPath();
+    ctx.moveTo(x + w/3, y + h/3);
+    ctx.lineTo(x + w/2, y + h/4);
+    ctx.lineTo(x + w*2/3, y + h/3);
+    ctx.closePath();
+    ctx.fill();
+}
+
+function drawMovingPlatformTexture(x, y, w, h) {
+    drawPlatformTexture(x, y, w, h, 'moving');
+    
+    // 添加移动平台特有纹理（齿轮图案）
+    ctx.fillStyle = '#553388';
+    for(let i = 0; i < w; i += 12) {
+        // 齿轮中心
+        ctx.beginPath();
+        ctx.arc(x + i + 6, y + h/2, 3, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // 齿轮齿
+        for(let j = 0; j < 8; j++) {
+            const angle = (j * Math.PI / 4) + coinAnim;
+            const px = x + i + 6 + Math.cos(angle) * 6;
+            const py = y + h/2 + Math.sin(angle) * 6;
+            ctx.fillRect(px - 1, py - 1, 2, 3);
+        }
+    }
+}
+
+function render() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // 绘制远景分层（最远的层先画）
+    drawParallaxMountains();
+    
+    // 绘制云朵（带视差效果）
+    ctx.save();
+    clouds.forEach(cloud => {
+        const parallaxOffset = camera.x * cloud.speed;
+        drawCloud(cloud.x - parallaxOffset, cloud.y, cloud.size, cloud.color);
+    });
+    ctx.restore();
+    
+    // 绘制远处树木
+    drawDistantTrees();
+    
+    // 绘制前景灌木
+    drawForegroundBushes();
+    
+    // 绘制游戏主层
+    ctx.save();
+    ctx.translate(-camera.x, 0);
+
+    // 绘制平台（带纹理）
+    platforms.forEach(p => {
+        drawPlatformTexture(p.x, p.y, p.w, p.h, 'normal');
+    });
+
+    // 绘制移动平台（带齿轮纹理）
+    movePlatforms.forEach(mp => {
+        drawMovingPlatformTexture(mp.x, mp.y, mp.w, mp.h);
+    });
+
+    // 绘制弹簧平台
+    springs.forEach(sp => {
+        drawSpringTexture(sp.x, sp.y, sp.w, sp.h);
+    });
+
+    // 绘制尖刺
+    spikes.forEach(s => {
+        drawSpike(s.x, s.y, s.w, s.h);
+    });
+
+    // 绘制金币
+    coins.forEach(coin => {
+        if (!coin.collected) drawCoin(coin.x, coin.y);
+    });
+
+    // 绘制隐藏金币
+    hideCoins.forEach(hc => {
+        if(!hc.collected){
+            let dx = player.x + player.w/2 - hc.x;
+            let dy = player.y + player.h/2 - hc.y;
+            let dist = Math.hypot(dx,dy);
+            if(dist < 120){
+                ctx.globalAlpha = 1 - dist/120;
+                drawCoin(hc.x,hc.y);
+                ctx.globalAlpha = 1;
+            }
+        }
+    });
+
+    // 绘制旗帜
+    drawFlag(flag.x, flag.y, flag.poleHeight, flag.wave);
+    
+    // 绘制玩家
+    drawPixelPlayer(player.x, player.y);
+
+    ctx.restore();
+    
+    // 绘制UI（在游戏层之上）
+    drawUI();
+}
+
+// 初始化远景元素
+generateParallaxElements();
+generateDecorations();
+
+gameLoop();
+</script>
+</body>
+</html> 
+       
